@@ -1,0 +1,33 @@
+services:
+  - name: qzmotorcenter-ai-api
+    type: web
+    runtime: docker
+    plan: free
+    region: oregon
+    autoDeploy: true
+    healthCheckPath: /health
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: LLM_PROVIDER
+        value: groq
+      - key: GROQ_MODEL
+        value: llama-3.1-8b-instant
+      - key: GROQ_BASE_URL
+        value: https://api.groq.com/openai/v1
+      - key: AGENT_SYSTEM_PROMPT
+        value: Eres un agente de IA para soporte operativo y comercial de QZ Motor Center. Responde con claridad, accionable y profesionalismo.
+      - key: DATABASE_URL
+        fromDatabase:
+          name: qzmotorcenter-ai-db
+          property: connectionString
+      - key: GROQ_API_KEY
+        sync: false
+
+databases:
+  - name: qzmotorcenter-ai-db
+    plan: free
+    region: oregon
+    postgresMajorVersion: "17"
+    databaseName: ai_agent_db
+    user: qzmotorcenter
