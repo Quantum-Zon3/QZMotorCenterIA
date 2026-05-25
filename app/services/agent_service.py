@@ -88,12 +88,15 @@ class AgentService:
             )
 
         try:
-            response = self.groq_client.responses.create(
+            response = self.groq_client.chat.completions.create(
                 model=self.groq_model_name,
-                instructions=settings.agent_system_prompt,
-                input=prompt,
+                messages=[
+                    {"role": "system", "content": settings.agent_system_prompt},
+                    {"role": "user", "content": prompt},
+                ],
             )
-            return response.output_text, self.groq_model_name
+            content = response.choices[0].message.content or ""
+            return content, self.groq_model_name
         except RateLimitError:
             return self._build_fallback_response(
                 prompt=prompt,
