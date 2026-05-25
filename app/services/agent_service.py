@@ -10,6 +10,9 @@ from app.core.config import settings
 from app.models.conversation import Conversation, Message
 
 
+SourceConfig = dict[str, object]
+
+
 class AgentService:
     def __init__(self) -> None:
         self.provider = settings.llm_provider.strip().lower()
@@ -20,9 +23,16 @@ class AgentService:
             else None
         )
 
-    def run(self, db: Session, prompt: str, conversation_id: str | None, title: str) -> dict:
+    def run(
+        self,
+        db: Session,
+        prompt: str,
+        conversation_id: str | None,
+        title: str,
+        authorization: str | None = None,
+    ) -> dict:
         conversation = self._get_or_create_conversation(db, conversation_id, title)
-        application_context = self._build_application_context(prompt)
+        application_context = self._build_application_context(prompt, authorization)
         prompt_for_model = self._merge_prompt_with_context(prompt, application_context)
 
         user_message = Message(
@@ -133,17 +143,20 @@ class AgentService:
     def _build_fallback_response(
         self, prompt: str, conversation_id: str, reason: str
     ) -> tuple[str, str]:
-        motorcycles_count = re.search(r"hay (\d+) motos registradas", prompt)
-        if motorcycles_count:
+        count_matches = re.findall(r"- ([^:]+): ([0-9]+) (?:registros|modelos|reportes)", prompt)
+        if count_matches:
+            summary = "; ".join(
+                f"{label.lower()}: {count}" for label, count in count_matches
+            )
             return (
-                f"Actualmente hay {motorcycles_count.group(1)} motos registradas en la tienda.",
+                f"Datos actuales de la aplicacion: {summary}.",
                 "local-dev-fallback",
             )
 
-        if "no pude consultar el microservicio de motos" in prompt:
+        if "no se pudo consultar" in prompt:
             return (
-                "No pude consultar el microservicio de motos en este momento. "
-                "Intenta nuevamente cuando el servicio este disponible.",
+                "No pude consultar uno o mas microservicios en este momento. "
+                "Intenta nuevamente cuando los servicios esten disponibles.",
                 "local-dev-fallback",
             )
 
@@ -155,33 +168,21 @@ class AgentService:
             "local-dev-fallback",
         )
 
-    def _build_application_context(self, prompt: str) -> str | None:
+    def _build_application_context(self, prompt: str, authorization: str | None) -> str | None:
         normalized_prompt = self._normalize_text(prompt)
-        asks_about_motorcycles = any(
-            word in normalized_prompt for word in ("moto", "motos", "motocicleta", "motocicletas")
-        )
-        asks_for_count = any(
-            word in normalized_prompt for word in ("cuantas", "cuantos", "cantidad", "total", "hay")
-        )
+        selected_sources = self._select_sources(normalized_prompt)
 
-        if not asks_about_motorcycles or not asks_for_count:
+        if not selected_sources:
             return None
 
-        try:
-            motorcycles_count = self._fetch_collection_count(
-                base_url=settings.motorcycles_api_url,
-                path="/api/motorcycles/",
-            )
-        except httpx.HTTPError as exc:
-            return (
-                "Contexto del sistema: el usuario pregunta por motos registradas, "
-                f"pero no pude consultar el microservicio de motos. Error: {exc}"
-            )
+        context_lines = [
+            "Contexto real consultado desde los microservicios de QZ Motor Center:"
+        ]
 
-        return (
-            "Contexto del sistema: el dato real actual indica que hay "
-            f"{motorcycles_count} motos registradas en la tienda."
-        )
+        for source in selected_sources:
+            context_lines.append(self._build_source_context(source, authorization))
+
+        return "\n".join(context_lines)
 
     def _merge_prompt_with_context(self, prompt: str, application_context: str | None) -> str:
         if not application_context:
@@ -194,22 +195,189 @@ class AgentService:
             "No inventes cifras si el contexto dice que no se pudo consultar."
         )
 
-    def _fetch_collection_count(self, base_url: str, path: str) -> int:
+    def _build_source_context(self, source: SourceConfig, authorization: str | None) -> str:
+        label = str(source["label"])
+        try:
+            payload = self._fetch_json(
+                base_url=str(source["base_url"]),
+                path=str(source["path"]),
+                authorization=authorization if source.get("requires_auth") else None,
+            )
+            return self._summarize_payload(label, str(source["kind"]), payload)
+        except httpx.HTTPError as exc:
+            return f"- {label}: no se pudo consultar. Error: {exc}"
+
+    def _fetch_json(self, base_url: str, path: str, authorization: str | None = None) -> object:
         url = urljoin(base_url.rstrip("/") + "/", path.lstrip("/"))
+        headers = {"Authorization": authorization} if authorization else None
         with httpx.Client(timeout=12, follow_redirects=True) as client:
-            response = client.get(url)
+            response = client.get(url, headers=headers)
             response.raise_for_status()
 
-        payload = response.json()
+        return response.json()
+
+    def _summarize_payload(self, label: str, kind: str, payload: object) -> str:
+        items = self._extract_items(payload)
+        count = len(items)
+
+        if kind == "reports":
+            report_total = self._extract_numeric(payload, "total")
+            sales_total = sum(self._number(item.get("totalAmount")) for item in items)
+            total_label = report_total if report_total is not None else count
+            return (
+                f"- {label}: {total_label} reportes registrados; "
+                f"monto acumulado aproximado {sales_total:.2f}."
+            )
+
+        if kind == "electrobikes":
+            stock_total = sum(self._number(item.get("stock")) for item in items)
+            available = sum(
+                1 for item in items
+                if self._normalize_text(str(item.get("estado", ""))) == "disponible"
+            )
+            return (
+                f"- {label}: {count} modelos registrados; "
+                f"stock total {stock_total:.0f}; disponibles {available}."
+            )
+
+        inventory_value = sum(
+            self._number(item.get("price"))
+            or self._number(item.get("precio"))
+            or self._number(item.get("unitPrice"))
+            for item in items
+        )
+        sample_names = self._sample_item_names(items)
+        sample_text = f" Ejemplos: {', '.join(sample_names)}." if sample_names else ""
+        return (
+            f"- {label}: {count} registros creados; "
+            f"valor listado aproximado {inventory_value:.2f}.{sample_text}"
+        )
+
+    def _extract_items(self, payload: object) -> list[dict]:
         if isinstance(payload, list):
-            return len(payload)
+            return [item for item in payload if isinstance(item, dict)]
         if isinstance(payload, dict):
-            for key in ("data", "items", "results", "motorcycles", "motos"):
+            for key in ("data", "items", "results", "cars", "motorcycles", "motos", "electrobikes", "scooters", "usuarios"):
                 value = payload.get(key)
                 if isinstance(value, list):
-                    return len(value)
+                    return [item for item in value if isinstance(item, dict)]
 
-        raise httpx.HTTPError("La respuesta del microservicio de motos no es una lista.")
+        return []
+
+    def _extract_numeric(self, payload: object, key: str) -> float | None:
+        if isinstance(payload, dict) and key in payload:
+            return self._number(payload.get(key))
+        return None
+
+    def _number(self, value: object) -> float:
+        try:
+            if value is None or value == "":
+                return 0.0
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _sample_item_names(self, items: list[dict]) -> list[str]:
+        names: list[str] = []
+        for item in items[:3]:
+            name = (
+                item.get("modelo")
+                or item.get("model")
+                or item.get("productName")
+                or item.get("nombre")
+                or item.get("email")
+            )
+            brand = item.get("marca") or item.get("brand")
+            if isinstance(brand, dict):
+                brand = brand.get("nombre")
+            text = f"{brand or ''} {name or ''}".strip()
+            if text:
+                names.append(text)
+        return names
+
+    def _select_sources(self, normalized_prompt: str) -> list[SourceConfig]:
+        sources = self._sources()
+        asks_global = any(
+            word in normalized_prompt
+            for word in (
+                "todo", "todos", "toda", "aplicacion", "inventario", "vehiculos",
+                "catalogo", "stock", "tienda", "negocio", "resumen", "general",
+            )
+        )
+
+        selected = [
+            source for source in sources
+            if any(keyword in normalized_prompt for keyword in source["keywords"])
+        ]
+
+        if asks_global:
+            selected.extend(
+                source for source in sources
+                if source["kind"] in {"inventory", "electrobikes", "reports"}
+            )
+
+        unique: list[SourceConfig] = []
+        seen: set[str] = set()
+        for source in selected:
+            key = str(source["key"])
+            if key not in seen:
+                unique.append(source)
+                seen.add(key)
+
+        return unique
+
+    def _sources(self) -> list[SourceConfig]:
+        return [
+            {
+                "key": "cars",
+                "label": "Carros",
+                "kind": "inventory",
+                "base_url": settings.cars_api_url,
+                "path": "/api/cars",
+                "keywords": ("carro", "carros", "auto", "autos", "coche", "coches"),
+            },
+            {
+                "key": "motorcycles",
+                "label": "Motos",
+                "kind": "inventory",
+                "base_url": settings.motorcycles_api_url,
+                "path": "/api/motorcycles/",
+                "keywords": ("moto", "motos", "motocicleta", "motocicletas"),
+            },
+            {
+                "key": "electrobikes",
+                "label": "Electrobikes",
+                "kind": "electrobikes",
+                "base_url": settings.electrobikes_api_url,
+                "path": "/api/electrobikes",
+                "keywords": ("electrobike", "electrobikes", "bicicleta", "bicicletas", "electrica", "electricas"),
+            },
+            {
+                "key": "scooters",
+                "label": "Scooters",
+                "kind": "inventory",
+                "base_url": settings.scooters_api_url,
+                "path": "/api/scooters",
+                "keywords": ("scooter", "scooters", "patineta", "patinetas"),
+            },
+            {
+                "key": "reports",
+                "label": "Reportes de ventas",
+                "kind": "reports",
+                "base_url": settings.reports_api_url,
+                "path": "/api/reports",
+                "keywords": ("reporte", "reportes", "venta", "ventas", "ingreso", "ingresos", "facturacion"),
+            },
+            {
+                "key": "users",
+                "label": "Usuarios",
+                "kind": "inventory",
+                "base_url": settings.auth_api_url,
+                "path": "/qzMotorCenter/auth",
+                "requires_auth": True,
+                "keywords": ("usuario", "usuarios", "cliente", "clientes", "cuenta", "cuentas"),
+            },
+        ]
 
     def _normalize_text(self, value: str) -> str:
         without_accents = "".join(

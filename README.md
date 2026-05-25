@@ -32,7 +32,12 @@ Variables clave:
 - `GROQ_API_KEY`
 - `GROQ_MODEL`
 - `GROQ_BASE_URL`
+- `AUTH_API_URL`
+- `CARS_API_URL`
 - `MOTORCYCLES_API_URL`
+- `ELECTROBIKES_API_URL`
+- `SCOOTERS_API_URL`
+- `REPORTS_API_URL`
 - `AGENT_SYSTEM_PROMPT`
 
 Ejemplo de conexion local para PostgreSQL:
@@ -85,9 +90,23 @@ Content-Type: application/json
 }
 ```
 
-Cuando el prompt pregunta por la cantidad de motos, el agente consulta
-`MOTORCYCLES_API_URL/api/motorcycles/` y usa ese dato real como contexto antes
-de responder.
+Cuando el prompt pregunta por datos reales de la aplicacion, el agente consulta
+los microservicios correspondientes y usa ese contexto antes de responder:
+
+- Carros: `CARS_API_URL/api/cars`
+- Motos: `MOTORCYCLES_API_URL/api/motorcycles/`
+- Electrobikes: `ELECTROBIKES_API_URL/api/electrobikes`
+- Scooters: `SCOOTERS_API_URL/api/scooters`
+- Reportes de ventas: `REPORTS_API_URL/api/reports`
+- Usuarios: `AUTH_API_URL/qzMotorCenter/auth` usando el token reenviado por el gateway
+
+Ejemplos de prompts:
+
+- `Cuantas motos hay en la tienda?`
+- `Dame un resumen del inventario`
+- `Cuantos carros y scooters hay?`
+- `Cuantas ventas hay registradas?`
+- `Cuantos usuarios existen?`
 
 ## Comportamiento del agente
 

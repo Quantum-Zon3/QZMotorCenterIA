@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
@@ -56,10 +56,15 @@ def get_conversation(conversation_id: str, db: Session = Depends(get_db)) -> Con
 
 
 @router.post("/api/v1/agent/run", response_model=AgentRunResponse)
-def run_agent(payload: AgentRunRequest, db: Session = Depends(get_db)) -> dict:
+def run_agent(
+    payload: AgentRunRequest,
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+) -> dict:
     return agent_service.run(
         db=db,
         prompt=payload.prompt,
         conversation_id=payload.conversation_id,
         title=payload.title,
+        authorization=authorization,
     )

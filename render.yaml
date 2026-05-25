@@ -15,8 +15,18 @@ services:
         value: llama-3.1-8b-instant
       - key: GROQ_BASE_URL
         value: https://api.groq.com/openai/v1
+      - key: AUTH_API_URL
+        value: https://qzmotorcenter-api.onrender.com
+      - key: CARS_API_URL
+        value: https://qzmotorcenter-cars-api.onrender.com
       - key: MOTORCYCLES_API_URL
         value: https://qzmotorcenter-motorcycles-api.onrender.com
+      - key: ELECTROBIKES_API_URL
+        value: https://qzmotorcenter-electrobike-api.onrender.com
+      - key: SCOOTERS_API_URL
+        value: https://qzmotorcenter-scooter-api.onrender.com
+      - key: REPORTS_API_URL
+        value: https://qzmotorcenterreports-1.onrender.com
       - key: AGENT_SYSTEM_PROMPT
         value: Eres un agente de IA para soporte operativo y comercial de QZ Motor Center. Responde con claridad, accionable y profesionalismo.
       - key: DATABASE_URL
