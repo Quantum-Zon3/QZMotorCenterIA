@@ -1,3 +1,8 @@
+from urllib.parse import urljoin
+import re
+import unicodedata
+
+import httpx
 from openai import APIConnectionError, APIError, AuthenticationError, OpenAI, RateLimitError
 from sqlalchemy.orm import Session
 
@@ -17,6 +22,8 @@ class AgentService:
 
     def run(self, db: Session, prompt: str, conversation_id: str | None, title: str) -> dict:
         conversation = self._get_or_create_conversation(db, conversation_id, title)
+        application_context = self._build_application_context(prompt)
+        prompt_for_model = self._merge_prompt_with_context(prompt, application_context)
 
         user_message = Message(
             conversation_id=conversation.id,
@@ -26,7 +33,10 @@ class AgentService:
         db.add(user_message)
         db.flush()
 
-        assistant_text, model_name = self._generate_response(prompt=prompt, conversation=conversation)
+        assistant_text, model_name = self._generate_response(
+            prompt=prompt_for_model,
+            conversation=conversation,
+        )
 
         assistant_message = Message(
             conversation_id=conversation.id,
@@ -68,7 +78,11 @@ class AgentService:
             )
 
         if self.provider == "ollama":
-            return self._generate_ollama_response(prompt=prompt, conversation=conversation)
+            return self._build_fallback_response(
+                prompt=prompt,
+                conversation_id=conversation.id,
+                reason="el proveedor ollama no esta disponible en este despliegue",
+            )
 
         if self.provider == "groq":
             return self._generate_groq_response(prompt=prompt, conversation=conversation)
@@ -119,6 +133,20 @@ class AgentService:
     def _build_fallback_response(
         self, prompt: str, conversation_id: str, reason: str
     ) -> tuple[str, str]:
+        motorcycles_count = re.search(r"hay (\d+) motos registradas", prompt)
+        if motorcycles_count:
+            return (
+                f"Actualmente hay {motorcycles_count.group(1)} motos registradas en la tienda.",
+                "local-dev-fallback",
+            )
+
+        if "no pude consultar el microservicio de motos" in prompt:
+            return (
+                "No pude consultar el microservicio de motos en este momento. "
+                "Intenta nuevamente cuando el servicio este disponible.",
+                "local-dev-fallback",
+            )
+
         return (
             "Modo desarrollo activo: "
             f"{reason}. "
@@ -126,3 +154,66 @@ class AgentService:
             "La conversacion y los mensajes quedaron guardados correctamente en la base de datos.",
             "local-dev-fallback",
         )
+
+    def _build_application_context(self, prompt: str) -> str | None:
+        normalized_prompt = self._normalize_text(prompt)
+        asks_about_motorcycles = any(
+            word in normalized_prompt for word in ("moto", "motos", "motocicleta", "motocicletas")
+        )
+        asks_for_count = any(
+            word in normalized_prompt for word in ("cuantas", "cuantos", "cantidad", "total", "hay")
+        )
+
+        if not asks_about_motorcycles or not asks_for_count:
+            return None
+
+        try:
+            motorcycles_count = self._fetch_collection_count(
+                base_url=settings.motorcycles_api_url,
+                path="/api/motorcycles/",
+            )
+        except httpx.HTTPError as exc:
+            return (
+                "Contexto del sistema: el usuario pregunta por motos registradas, "
+                f"pero no pude consultar el microservicio de motos. Error: {exc}"
+            )
+
+        return (
+            "Contexto del sistema: el dato real actual indica que hay "
+            f"{motorcycles_count} motos registradas en la tienda."
+        )
+
+    def _merge_prompt_with_context(self, prompt: str, application_context: str | None) -> str:
+        if not application_context:
+            return prompt
+
+        return (
+            f"{prompt}\n\n"
+            f"{application_context}\n"
+            "Responde usando ese dato real de la aplicacion. "
+            "No inventes cifras si el contexto dice que no se pudo consultar."
+        )
+
+    def _fetch_collection_count(self, base_url: str, path: str) -> int:
+        url = urljoin(base_url.rstrip("/") + "/", path.lstrip("/"))
+        with httpx.Client(timeout=12, follow_redirects=True) as client:
+            response = client.get(url)
+            response.raise_for_status()
+
+        payload = response.json()
+        if isinstance(payload, list):
+            return len(payload)
+        if isinstance(payload, dict):
+            for key in ("data", "items", "results", "motorcycles", "motos"):
+                value = payload.get(key)
+                if isinstance(value, list):
+                    return len(value)
+
+        raise httpx.HTTPError("La respuesta del microservicio de motos no es una lista.")
+
+    def _normalize_text(self, value: str) -> str:
+        without_accents = "".join(
+            char for char in unicodedata.normalize("NFD", value)
+            if unicodedata.category(char) != "Mn"
+        )
+        return without_accents.lower()

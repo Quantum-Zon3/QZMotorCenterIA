@@ -32,6 +32,7 @@ Variables clave:
 - `GROQ_API_KEY`
 - `GROQ_MODEL`
 - `GROQ_BASE_URL`
+- `MOTORCYCLES_API_URL`
 - `AGENT_SYSTEM_PROMPT`
 
 Ejemplo de conexion local para PostgreSQL:
@@ -69,6 +70,24 @@ Sirve para desplegar con inferencia real usando Groq como proveedor administrado
 - `POST /api/v1/conversations`
 - `GET /api/v1/conversations/{conversation_id}`
 - `POST /api/v1/agent/run`
+
+Ejemplo por API Gateway:
+
+```http
+POST https://qz-gateway.onrender.com/api/v1/agent/run
+Authorization: Bearer TU_TOKEN
+Content-Type: application/json
+```
+
+```json
+{
+  "prompt": "Cuantas motos hay en la tienda?"
+}
+```
+
+Cuando el prompt pregunta por la cantidad de motos, el agente consulta
+`MOTORCYCLES_API_URL/api/motorcycles/` y usa ese dato real como contexto antes
+de responder.
 
 ## Comportamiento del agente
 
